@@ -22,7 +22,7 @@ import (
 	"time"
 )
 
-func TestClientCheckAndVerifyUsesCachedCertificate(t *testing.T) {
+func TestClientCheckUsesCachedCertificate(t *testing.T) {
 	privateKey, _, certDER := mustCreateSelfSignedRSACertificate(t)
 	caPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})
 	if len(caPEM) == 0 {
@@ -81,17 +81,17 @@ func TestClientCheckAndVerifyUsesCachedCertificate(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	first, err := client.CheckAndVerify(ctx, "nonce-1")
+	first, err := client.Check(ctx, "nonce-1")
 	if err != nil {
-		t.Fatalf("check and verify failed: %v", err)
+		t.Fatalf("check failed: %v", err)
 	}
 	if !first.OK {
 		t.Fatalf("expected ok result, got %+v", first)
 	}
 
-	second, err := client.CheckAndVerify(ctx, "nonce-2")
+	second, err := client.Check(ctx, "nonce-2")
 	if err != nil {
-		t.Fatalf("second check and verify failed: %v", err)
+		t.Fatalf("second check failed: %v", err)
 	}
 	if !second.OK {
 		t.Fatalf("expected second result ok, got %+v", second)
@@ -176,7 +176,7 @@ func TestRefreshCertificateInvalidBase64(t *testing.T) {
 	}
 }
 
-func TestClientCheckAndVerifyOverUDS(t *testing.T) {
+func TestClientCheckOverUDS(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("UDS integration test is skipped on Windows")
 	}
@@ -251,9 +251,9 @@ func TestClientCheckAndVerifyOverUDS(t *testing.T) {
 		t.Fatalf("new client failed: %v", err)
 	}
 
-	result, err := client.CheckAndVerify(context.Background(), "nonce-uds")
+	result, err := client.Check(context.Background(), "nonce-uds")
 	if err != nil {
-		t.Fatalf("check and verify over uds failed: %v", err)
+		t.Fatalf("check over uds failed: %v", err)
 	}
 	if !result.OK {
 		t.Fatalf("expected ok result, got %+v", result)

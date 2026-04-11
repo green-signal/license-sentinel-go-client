@@ -92,7 +92,6 @@ go run ./cmd/license-sentinel-uds-example \
 - `Init(ctx)` — предварительно получить и закэшировать сертификат.
 - `RefreshCertificate(ctx)` — принудительно обновить сертификат.
 - `Check(ctx, clientNonce)` — выполнить запрос `/signature/check` и автоматически провалидировать ответ.
-- `CheckAndVerify(ctx, clientNonce)` — совместимый алиас для `Check`.
 - `Config.UnixSocketPath` — включить UDS-транспорт (если задан, `BaseURL` можно не указывать).
 
 ## Лицензия

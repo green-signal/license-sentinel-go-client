@@ -259,10 +259,6 @@ func (c *Client) checkRaw(ctx context.Context, clientNonce string) (CheckResult,
 	}
 }
 
-func (c *Client) CheckAndVerify(ctx context.Context, clientNonce string) (CheckResult, error) {
-	return c.Check(ctx, clientNonce)
-}
-
 func (c *Client) validateCheckResult(ctx context.Context, result CheckResult) error {
 	cert, err := c.getOrRefreshCertificate(ctx)
 	if err != nil {
