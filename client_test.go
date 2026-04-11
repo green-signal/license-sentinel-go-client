@@ -12,8 +12,11 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"math/big"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
+	"runtime"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -170,6 +173,96 @@ func TestRefreshCertificateInvalidBase64(t *testing.T) {
 
 	if _, err := client.RefreshCertificate(context.Background()); err == nil {
 		t.Fatal("expected refresh certificate to fail for invalid base64")
+	}
+}
+
+func TestClientCheckAndVerifyOverUDS(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("UDS integration test is skipped on Windows")
+	}
+
+	privateKey, _, certDER := mustCreateSelfSignedRSACertificate(t)
+	caPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})
+
+	socketPath := filepath.Join(t.TempDir(), "license-sentinel.sock")
+	ln, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatalf("listen unix failed: %v", err)
+	}
+	defer func(ln net.Listener) {
+		_ = ln.Close()
+	}(ln)
+
+	var certCalls atomic.Int32
+	var checkCalls atomic.Int32
+
+	srv := &http.Server{
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch {
+			case r.Method == http.MethodGet && r.URL.Path == "/api/v1/certificate":
+				certCalls.Add(1)
+				if got := r.URL.Query().Get("client_id"); got != "test-client" {
+					t.Fatalf("unexpected client_id: %q", got)
+				}
+				writeJSON(t, w, http.StatusOK, map[string]any{
+					"result": map[string]any{
+						"certificate": base64.StdEncoding.EncodeToString(certDER),
+					},
+				})
+			case r.Method == http.MethodPost && r.URL.Path == "/api/v1/signature/check":
+				checkCalls.Add(1)
+				var req map[string]string
+				if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+					t.Fatalf("decode request failed: %v", err)
+				}
+				challenge := "uds-challenge:" + req["client_nonce"]
+				signatureB64 := mustSignChallengeB64(t, privateKey, challenge)
+
+				writeJSON(t, w, http.StatusOK, map[string]any{
+					"result": map[string]any{
+						"ok":         true,
+						"code":       "ok",
+						"checked_at": time.Now().UTC().Format(time.RFC3339Nano),
+						"challenge":  challenge,
+						"signature":  signatureB64,
+					},
+				})
+			default:
+				http.NotFound(w, r)
+			}
+		}),
+	}
+
+	doneCh := make(chan error, 1)
+	go func() {
+		doneCh <- srv.Serve(ln)
+	}()
+	defer func() {
+		_ = srv.Close()
+		<-doneCh
+	}()
+
+	client, err := New(Config{
+		ClientID:       "test-client",
+		UnixSocketPath: socketPath,
+		TrustedCAPEM:   string(caPEM),
+	})
+	if err != nil {
+		t.Fatalf("new client failed: %v", err)
+	}
+
+	result, err := client.CheckAndVerify(context.Background(), "nonce-uds")
+	if err != nil {
+		t.Fatalf("check and verify over uds failed: %v", err)
+	}
+	if !result.OK {
+		t.Fatalf("expected ok result, got %+v", result)
+	}
+	if certCalls.Load() != 1 {
+		t.Fatalf("expected one certificate request, got %d", certCalls.Load())
+	}
+	if checkCalls.Load() != 1 {
+		t.Fatalf("expected one check request, got %d", checkCalls.Load())
 	}
 }
 

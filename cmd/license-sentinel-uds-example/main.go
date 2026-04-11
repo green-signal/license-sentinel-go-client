@@ -5,23 +5,21 @@ import (
 	"flag"
 	"fmt"
 	"log"
-	"net/http"
 	"time"
 
 	licensesentinel "github.com/green-signal/license-sentinel-go-client"
 )
 
 func main() {
-	baseURL := flag.String("base-url", "http://127.0.0.1:8080", "license-sentinel base URL")
+	socketPath := flag.String("unix-socket", "/tmp/license-sentinel.sock", "unix socket path")
 	clientID := flag.String("client-id", "test-client", "license-sentinel client id")
 	nonce := flag.String("nonce", "demo-nonce", "client nonce for check request")
 	timeout := flag.Duration("timeout", 5*time.Second, "request timeout")
 	flag.Parse()
 
 	client, err := licensesentinel.New(licensesentinel.Config{
-		BaseURL:    *baseURL,
-		ClientID:   *clientID,
-		HTTPClient: &http.Client{Timeout: *timeout},
+		ClientID:       *clientID,
+		UnixSocketPath: *socketPath,
 	})
 	if err != nil {
 		log.Fatalf("create client failed: %v", err)
@@ -34,9 +32,9 @@ func main() {
 		log.Fatalf("init failed: %v", err)
 	}
 
-	result, err := client.CheckAndVerify(ctx, *nonce)
+	result, err := client.Check(ctx, *nonce)
 	if err != nil {
-		log.Fatalf("check and verify failed: %v", err)
+		log.Fatalf("check failed: %v", err)
 	}
 	if !result.OK {
 		log.Fatalf("check returned non-ok result code=%s", result.Code)

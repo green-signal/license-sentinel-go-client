@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -27,6 +28,9 @@ type Config struct {
 	APIPath    string
 	ClientID   string
 	HTTPClient *http.Client
+	// UnixSocketPath enables UDS transport for requests to license-sentinel.
+	// When set, BaseURL may be omitted.
+	UnixSocketPath string
 
 	// TrustedCAPEM overrides the built-in CA certificate bundle.
 	// Leave empty in production usage where CA is embedded in SDK.
@@ -76,9 +80,14 @@ type serverError struct {
 }
 
 func New(cfg Config) (*Client, error) {
+	unixSocketPath := strings.TrimSpace(cfg.UnixSocketPath)
 	baseURL := strings.TrimSpace(cfg.BaseURL)
-	if baseURL == "" {
-		return nil, errors.New("base URL is required")
+	if unixSocketPath == "" {
+		if baseURL == "" {
+			return nil, errors.New("base URL is required")
+		}
+	} else if baseURL == "" {
+		baseURL = "http://unix"
 	}
 	if _, err := url.ParseRequestURI(baseURL); err != nil {
 		return nil, fmt.Errorf("invalid base URL: %w", err)
@@ -91,7 +100,11 @@ func New(cfg Config) (*Client, error) {
 
 	httpClient := cfg.HTTPClient
 	if httpClient == nil {
-		httpClient = &http.Client{Timeout: 5 * time.Second}
+		if unixSocketPath != "" {
+			httpClient = newUDSHTTPClient(unixSocketPath, 5*time.Second)
+		} else {
+			httpClient = &http.Client{Timeout: 5 * time.Second}
+		}
 	}
 
 	apiPath := normalizeAPIPath(cfg.APIPath)
@@ -108,6 +121,20 @@ func New(cfg Config) (*Client, error) {
 		clientID:   clientID,
 		roots:      roots,
 	}, nil
+}
+
+func newUDSHTTPClient(socketPath string, timeout time.Duration) *http.Client {
+	transport := &http.Transport{
+		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			var d net.Dialer
+			return d.DialContext(ctx, "unix", socketPath)
+		},
+	}
+
+	return &http.Client{
+		Timeout:   timeout,
+		Transport: transport,
+	}
 }
 
 func (c *Client) ClientID() string {

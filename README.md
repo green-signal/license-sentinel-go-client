@@ -6,8 +6,9 @@ Go SDK для `license-sentinel`.
 
 ```text
 .
-|-- cmd/license-sentinel-example/   # исполняемый пример использования
-|-- client.go                       # HTTP-клиент и кэш сертификата
+|-- cmd/license-sentinel-http-example/  # исполняемый пример для HTTP
+|-- cmd/license-sentinel-uds-example/   # исполняемый пример для UDS
+|-- client.go                       # клиент (HTTP/UDS) и кэш сертификата
 |-- models.go                       # модели API
 |-- verify.go                       # локальная проверка подписи и сертификата
 |-- client_test.go
@@ -53,11 +54,29 @@ func main() {
 }
 ```
 
-## Запуск исполняемого примера
+### Подключение через UDS
+
+```go
+client, err := licensesentinel.New(licensesentinel.Config{
+    ClientID:       "test-client",
+    UnixSocketPath: "/tmp/license-sentinel.sock",
+})
+```
+
+## Запуск примера (HTTP)
 
 ```bash
-go run ./cmd/license-sentinel-example \
+go run ./cmd/license-sentinel-http-example \
   -base-url http://127.0.0.1:8080 \
+  -client-id test-client \
+  -nonce demo-nonce
+```
+
+## Запуск примера (UDS)
+
+```bash
+go run ./cmd/license-sentinel-uds-example \
+  -unix-socket /tmp/license-sentinel.sock \
   -client-id test-client \
   -nonce demo-nonce
 ```
@@ -74,6 +93,7 @@ go run ./cmd/license-sentinel-example \
 - `RefreshCertificate(ctx)` — принудительно обновить сертификат.
 - `Check(ctx, clientNonce)` — выполнить запрос `/signature/check` и автоматически провалидировать ответ.
 - `CheckAndVerify(ctx, clientNonce)` — совместимый алиас для `Check`.
+- `Config.UnixSocketPath` — включить UDS-транспорт (если задан, `BaseURL` можно не указывать).
 
 ## Важно для владельца SDK
 
