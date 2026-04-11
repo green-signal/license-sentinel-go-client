@@ -95,10 +95,6 @@ go run ./cmd/license-sentinel-uds-example \
 - `CheckAndVerify(ctx, clientNonce)` — совместимый алиас для `Check`.
 - `Config.UnixSocketPath` — включить UDS-транспорт (если задан, `BaseURL` можно не указывать).
 
-## Важно для владельца SDK
-
-CA-сертификат для валидации должен быть встроен в файл `ca_bundle.go` в переменную `defaultTrustedCAPEM`.
-
 ## Лицензия
 
 Apache License 2.0. См. [LICENSE](LICENSE).
