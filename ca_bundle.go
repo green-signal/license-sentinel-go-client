@@ -1,10 +1,11 @@
 package licensesentinel
 
-// defaultTrustedCAPEM should contain the PEM-encoded CA certificate used to
+// defaultTrustedCAPEM contains the PEM-encoded CA certificate used to
 // validate the certificate returned by license-sentinel.
 //
-// Replace this value with your production CA certificate.
-var defaultTrustedCAPEM = `-----BEGIN CERTIFICATE-----
+// This is the production GreenSign Root CA. Override via Config.TrustedCAPEM
+// only in tests or when using a custom CA.
+const defaultTrustedCAPEM = `-----BEGIN CERTIFICATE-----
 MIIFWzCCA0OgAwIBAgIUKezomZIQ+zy3c/PwU6qC7LSump4wDQYJKoZIhvcNAQEL
 BQAwPTELMAkGA1UEBhMCUlUxEjAQBgNVBAoMCUdyZWVuU2lnbjEaMBgGA1UEAwwR
 R3JlZW5TaWduIFJvb3QgQ0EwHhcNMjYwNDExMTk0OTI4WhcNMzYwNDA4MTk0OTI4

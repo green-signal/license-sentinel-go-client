@@ -109,7 +109,12 @@ func TestClientCheckReturnsBusinessFailureWithoutError(t *testing.T) {
 	_, _, certDER := mustCreateSelfSignedRSACertificate(t)
 	caPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})
 
+	var certCalls atomic.Int32
+
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.URL.Path == "/api/v1/certificate" {
+			certCalls.Add(1)
+		}
 		if r.Method != http.MethodPost || r.URL.Path != "/api/v1/signature/check" {
 			http.NotFound(w, r)
 			return
@@ -142,6 +147,55 @@ func TestClientCheckReturnsBusinessFailureWithoutError(t *testing.T) {
 	}
 	if result.Code != ResultSignFailed {
 		t.Fatalf("expected code %q, got %q", ResultSignFailed, result.Code)
+	}
+	if got := certCalls.Load(); got != 0 {
+		t.Fatalf("expected certificate endpoint not called, got %d calls", got)
+	}
+}
+
+func TestClientCheckFailsWhenNonceMissingFromChallenge(t *testing.T) {
+	privateKey, _, certDER := mustCreateSelfSignedRSACertificate(t)
+	caPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/certificate":
+			writeJSON(t, w, http.StatusOK, map[string]any{
+				"result": map[string]any{
+					"certificate": base64.StdEncoding.EncodeToString(certDER),
+				},
+			})
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/signature/check":
+			// Server returns challenge without the client_nonce — simulates replay attack
+			challenge := "service=license-sentinel;ts=2026-01-01T00:00:00Z;nonce=abc"
+			signatureB64 := mustSignChallengeB64(t, privateKey, challenge)
+			writeJSON(t, w, http.StatusOK, map[string]any{
+				"result": map[string]any{
+					"ok":         true,
+					"code":       "ok",
+					"checked_at": time.Now().UTC().Format(time.RFC3339Nano),
+					"challenge":  challenge,
+					"signature":  signatureB64,
+				},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	client, err := New(Config{
+		BaseURL:      srv.URL,
+		ClientID:     "test-client",
+		TrustedCAPEM: string(caPEM),
+	})
+	if err != nil {
+		t.Fatalf("new client failed: %v", err)
+	}
+
+	_, err = client.Check(context.Background(), "my-nonce-xyz")
+	if err == nil {
+		t.Fatal("expected error when client_nonce is absent from challenge")
 	}
 }
 

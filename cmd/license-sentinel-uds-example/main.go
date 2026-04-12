@@ -11,7 +11,7 @@ import (
 )
 
 func main() {
-	socketPath := flag.String("unix-socket", "/tmp/license-sentinel.sock", "unix socket path")
+	socketPath := flag.String("unix-socket", "C:\\tmp\\ls.sock", "unix socket path")
 	clientID := flag.String("client-id", "test-client", "license-sentinel client id")
 	nonce := flag.String("nonce", "demo-nonce", "client nonce for check request")
 	timeout := flag.Duration("timeout", 5*time.Second, "request timeout")

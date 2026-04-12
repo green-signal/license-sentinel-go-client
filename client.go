@@ -33,7 +33,8 @@ type Config struct {
 	UnixSocketPath string
 
 	// TrustedCAPEM overrides the built-in CA certificate bundle.
-	// Leave empty in production usage where CA is embedded in SDK.
+	// Leave empty to use the CA certificate embedded in the SDK.
+	// Override only in tests or when using a custom CA.
 	TrustedCAPEM string
 }
 
@@ -42,10 +43,11 @@ type Client struct {
 	apiBaseURL string
 	clientID   string
 
-	mu      sync.RWMutex
-	certDER []byte
-	cert    *x509.Certificate
-	roots   *x509.CertPool
+	certFetchMu sync.Mutex   // serializes concurrent certificate fetches
+	mu          sync.RWMutex // protects certDER and cert
+	certDER     []byte
+	cert        *x509.Certificate
+	roots       *x509.CertPool
 }
 
 type HTTPStatusError struct {
@@ -213,7 +215,7 @@ func (c *Client) Check(ctx context.Context, clientNonce string) (CheckResult, er
 		return result, nil
 	}
 
-	if err := c.validateCheckResult(ctx, result); err != nil {
+	if err := c.validateCheckResult(ctx, result, strings.TrimSpace(clientNonce)); err != nil {
 		return CheckResult{}, err
 	}
 
@@ -259,20 +261,17 @@ func (c *Client) checkRaw(ctx context.Context, clientNonce string) (CheckResult,
 	}
 }
 
-func (c *Client) validateCheckResult(ctx context.Context, result CheckResult) error {
+func (c *Client) validateCheckResult(ctx context.Context, result CheckResult, clientNonce string) error {
+	if clientNonce != "" && !strings.Contains(result.Challenge, "client_nonce="+clientNonce) {
+		return fmt.Errorf("client_nonce %q not found in challenge %q", clientNonce, result.Challenge)
+	}
+
 	cert, err := c.getOrRefreshCertificate(ctx)
 	if err != nil {
 		return err
 	}
 
 	if err := VerifyChallengeSignature(result.Challenge, result.Signature, cert); err != nil {
-		return err
-	}
-
-	if err := VerifyCertificate(cert, VerifyOptions{
-		Roots:     c.roots,
-		KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageAny},
-	}); err != nil {
 		return err
 	}
 
@@ -302,6 +301,19 @@ func (c *Client) getOrRefreshCertificate(ctx context.Context) (*x509.Certificate
 	if cached != nil {
 		return cached, nil
 	}
+
+	// Serialize concurrent fetches: only one goroutine performs the HTTP call,
+	// the rest wait and then return the result that was stored.
+	c.certFetchMu.Lock()
+	defer c.certFetchMu.Unlock()
+
+	c.mu.RLock()
+	cached = c.cert
+	c.mu.RUnlock()
+	if cached != nil {
+		return cached, nil
+	}
+
 	return c.RefreshCertificate(ctx)
 }
 
@@ -317,11 +329,8 @@ func normalizeAPIPath(apiPath string) string {
 }
 
 func decodeServerAnswer[T any](r io.Reader) (serverAnswer[T], error) {
-	dec := json.NewDecoder(r)
-	dec.DisallowUnknownFields()
-
 	var answer serverAnswer[T]
-	if err := dec.Decode(&answer); err != nil {
+	if err := json.NewDecoder(r).Decode(&answer); err != nil {
 		return serverAnswer[T]{}, err
 	}
 	return answer, nil
