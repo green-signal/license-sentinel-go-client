@@ -15,6 +15,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"path/filepath"
 	"runtime"
 	"sync/atomic"
@@ -53,7 +54,9 @@ func TestClientCheckUsesCachedCertificate(t *testing.T) {
 			if req["client_id"] != "test-client" {
 				t.Fatalf("unexpected client_id: %q", req["client_id"])
 			}
-			challenge := "challenge-for:" + req["client_nonce"]
+			// Challenge must contain client_nonce URL-encoded, matching
+			// the format produced by challenge.CanonicalBytes on the server.
+			challenge := "service=test;client_nonce=" + url.QueryEscape(req["client_nonce"])
 			signatureB64 := mustSignChallengeB64(t, privateKey, challenge)
 
 			writeJSON(t, w, http.StatusOK, map[string]any{
@@ -269,7 +272,7 @@ func TestClientCheckOverUDS(t *testing.T) {
 				if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 					t.Fatalf("decode request failed: %v", err)
 				}
-				challenge := "uds-challenge:" + req["client_nonce"]
+				challenge := "service=test;client_nonce=" + url.QueryEscape(req["client_nonce"])
 				signatureB64 := mustSignChallengeB64(t, privateKey, challenge)
 
 				writeJSON(t, w, http.StatusOK, map[string]any{

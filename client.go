@@ -262,7 +262,7 @@ func (c *Client) checkRaw(ctx context.Context, clientNonce string) (CheckResult,
 }
 
 func (c *Client) validateCheckResult(ctx context.Context, result CheckResult, clientNonce string) error {
-	if clientNonce != "" && !strings.Contains(result.Challenge, "client_nonce="+clientNonce) {
+	if clientNonce != "" && !strings.Contains(result.Challenge, "client_nonce="+url.QueryEscape(clientNonce)) {
 		return fmt.Errorf("client_nonce %q not found in challenge %q", clientNonce, result.Challenge)
 	}
 

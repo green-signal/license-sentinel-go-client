@@ -20,6 +20,9 @@ type VerifyOptions struct {
 	KeyUsages     []x509.ExtKeyUsage
 }
 
+// VerifyChallengeSignature verifies the RSA-SHA256 PKCS1v15 signature in signatureB64
+// over the challenge string using the public key from cert.
+// Only RSA certificates are currently supported.
 func VerifyChallengeSignature(challenge string, signatureB64 string, cert *x509.Certificate) error {
 	if cert == nil {
 		return ErrCertificateNotLoaded
