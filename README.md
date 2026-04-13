@@ -31,6 +31,8 @@ package main
 import (
 	"context"
 	"log"
+	"strconv"
+	"time"
 
 	licensesentinel "github.com/green-signal/license-sentinel-go-client"
 )
@@ -44,7 +46,10 @@ func main() {
 		log.Fatal(err)
 	}
 
-	result, err := client.Check(context.Background(), "nonce-1")
+	// Важно: clientNonce должен быть новым для каждого запроса.
+	// Простой вариант: текущее время в миллисекундах.
+	clientNonce := strconv.FormatInt(time.Now().UnixMilli(), 10)
+	result, err := client.Check(context.Background(), clientNonce)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -84,8 +89,16 @@ go run ./cmd/license-sentinel-uds-example \
 ## Как работает проверка
 
 - SDK получает сертификат через `/api/v1/certificate` и кэширует его.
+- В `Check(ctx, clientNonce)` SDK отправляет `client_id` и `client_nonce` в `/api/v1/signature/check`.
+- `client_nonce` передается со стороны клиента (например, из СТЗ/бизнес-логики) и должен быть уникальным для каждого запроса.
 - Ответ `/api/v1/signature/check` валидируется внутри SDK автоматически.
 - Валидация включает проверку подписи challenge и проверку цепочки сертификата до встроенного CA.
+
+## Рекомендации по client_nonce
+
+- Используйте новое значение в каждом вызове `Check`.
+- Подходящие варианты: `time.Now().UnixMilli()` как строка, UUID, криптографически случайная строка.
+- Не переиспользуйте старые значения: это снижает защиту от повторной отправки (replay) старых ответов.
 
 ## Публичный API
 

@@ -204,6 +204,15 @@ func (c *Client) RefreshCertificate(ctx context.Context) (*x509.Certificate, err
 	return cert, nil
 }
 
+// Check performs the main license-sentinel verification flow.
+//
+// clientNonce is an external client-provided confirmation string (for example,
+// from your STZ/business layer) that is sent to /signature/check and must be
+// unique per request.
+//
+// Recommendation:
+// - pass a different value for each call (Unix milliseconds, UUID, random token);
+// - do not reuse old values, otherwise replay resistance is reduced.
 func (c *Client) Check(ctx context.Context, clientNonce string) (CheckResult, error) {
 	normalizedNonce := strings.TrimSpace(clientNonce)
 	result, err := c.checkRaw(ctx, normalizedNonce)
