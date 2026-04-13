@@ -3,6 +3,9 @@ package licensesentinel
 import (
 	"bytes"
 	"context"
+	"crypto"
+	"crypto/rsa"
+	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
@@ -31,11 +34,6 @@ type Config struct {
 	// UnixSocketPath enables UDS transport for requests to license-sentinel.
 	// When set, BaseURL may be omitted.
 	UnixSocketPath string
-
-	// TrustedCAPEM overrides the built-in CA certificate bundle.
-	// Leave empty to use the CA certificate embedded in the SDK.
-	// Override only in tests or when using a custom CA.
-	TrustedCAPEM string
 }
 
 type Client struct {
@@ -112,7 +110,7 @@ func New(cfg Config) (*Client, error) {
 	apiPath := normalizeAPIPath(cfg.APIPath)
 	baseURL = strings.TrimRight(baseURL, "/")
 
-	roots, err := parseTrustedRoots(cfg.TrustedCAPEM)
+	roots, err := parseTrustedRoots()
 	if err != nil {
 		return nil, err
 	}
@@ -207,15 +205,21 @@ func (c *Client) RefreshCertificate(ctx context.Context) (*x509.Certificate, err
 }
 
 func (c *Client) Check(ctx context.Context, clientNonce string) (CheckResult, error) {
-	result, err := c.checkRaw(ctx, clientNonce)
+	normalizedNonce := strings.TrimSpace(clientNonce)
+	result, err := c.checkRaw(ctx, normalizedNonce)
 	if err != nil {
 		return CheckResult{}, err
 	}
+
+	if err := validateBusinessResult(result); err != nil {
+		return CheckResult{}, err
+	}
+
 	if !result.OK {
 		return result, nil
 	}
 
-	if err := c.validateCheckResult(ctx, result, strings.TrimSpace(clientNonce)); err != nil {
+	if err := c.validateCheckResult(ctx, result, normalizedNonce); err != nil {
 		return CheckResult{}, err
 	}
 
@@ -255,6 +259,9 @@ func (c *Client) checkRaw(ctx context.Context, clientNonce string) (CheckResult,
 		if err != nil {
 			return CheckResult{}, fmt.Errorf("decode check response: %w", err)
 		}
+		if err := validateHTTPResult(resp.StatusCode, answer.Result); err != nil {
+			return CheckResult{}, err
+		}
 		return answer.Result, nil
 	default:
 		return CheckResult{}, parseStatusError(resp, endpoint)
@@ -262,8 +269,13 @@ func (c *Client) checkRaw(ctx context.Context, clientNonce string) (CheckResult,
 }
 
 func (c *Client) validateCheckResult(ctx context.Context, result CheckResult, clientNonce string) error {
-	if clientNonce != "" && !strings.Contains(result.Challenge, "client_nonce="+url.QueryEscape(clientNonce)) {
-		return fmt.Errorf("client_nonce %q not found in challenge %q", clientNonce, result.Challenge)
+	parsed, err := parseAndValidateChallenge(result.Challenge, clientNonce)
+	if err != nil {
+		return err
+	}
+
+	if err := validateChallengeTimestamp(parsed.Timestamp, time.Now().UTC()); err != nil {
+		return err
 	}
 
 	cert, err := c.getOrRefreshCertificate(ctx)
@@ -272,6 +284,10 @@ func (c *Client) validateCheckResult(ctx context.Context, result CheckResult, cl
 	}
 
 	if err := VerifyChallengeSignature(result.Challenge, result.Signature, cert); err != nil {
+		return err
+	}
+
+	if err := verifyChallengeSignatureSecondPass(result.Challenge, result.Signature, cert); err != nil {
 		return err
 	}
 
@@ -353,11 +369,12 @@ func parseStatusError(resp *http.Response, endpoint string) error {
 	}
 }
 
-func parseTrustedRoots(trustedCAPEM string) (*x509.CertPool, error) {
-	pemPayload := strings.TrimSpace(trustedCAPEM)
-	if pemPayload == "" {
-		pemPayload = strings.TrimSpace(defaultTrustedCAPEM)
+func parseTrustedRoots() (*x509.CertPool, error) {
+	pemPayload, err := loadDefaultTrustedCAPEM()
+	if err != nil {
+		return nil, fmt.Errorf("load trusted CA: %w", err)
 	}
+	pemPayload = strings.TrimSpace(pemPayload)
 	if pemPayload == "" {
 		return nil, ErrTrustedCAIsNotConfigured
 	}
@@ -388,4 +405,27 @@ func parseTrustedRoots(trustedCAPEM string) (*x509.CertPool, error) {
 	}
 
 	return roots, nil
+}
+
+func verifyChallengeSignatureSecondPass(challenge string, signatureB64 string, cert *x509.Certificate) error {
+	if cert == nil {
+		return ErrCertificateNotLoaded
+	}
+
+	signatureRaw, err := base64.StdEncoding.DecodeString(strings.TrimSpace(signatureB64))
+	if err != nil {
+		return fmt.Errorf("decode signature base64 second pass: %w", err)
+	}
+
+	pub, ok := cert.PublicKey.(*rsa.PublicKey)
+	if !ok {
+		return errors.New("certificate public key is not RSA")
+	}
+
+	sum := sha256.Sum256([]byte(challenge))
+	if err := rsa.VerifyPKCS1v15(pub, crypto.SHA256, sum[:], signatureRaw); err != nil {
+		return fmt.Errorf("verify signature second pass failed: %w", err)
+	}
+
+	return nil
 }

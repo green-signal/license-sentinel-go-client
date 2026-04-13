@@ -10,7 +10,6 @@ import (
 	"crypto/x509/pkix"
 	"encoding/base64"
 	"encoding/json"
-	"encoding/pem"
 	"math/big"
 	"net"
 	"net/http"
@@ -18,17 +17,14 @@ import (
 	"net/url"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 )
 
 func TestClientCheckUsesCachedCertificate(t *testing.T) {
-	privateKey, _, certDER := mustCreateSelfSignedRSACertificate(t)
-	caPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})
-	if len(caPEM) == 0 {
-		t.Fatal("failed to encode test CA certificate")
-	}
+	privateKey, cert, certDER := mustCreateSelfSignedRSACertificate(t)
 
 	var certCalls atomic.Int32
 	var checkCalls atomic.Int32
@@ -37,14 +33,7 @@ func TestClientCheckUsesCachedCertificate(t *testing.T) {
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/certificate":
 			certCalls.Add(1)
-			if got := r.URL.Query().Get("client_id"); got != "test-client" {
-				t.Fatalf("unexpected client_id: %q", got)
-			}
-			writeJSON(t, w, http.StatusOK, map[string]any{
-				"result": map[string]any{
-					"certificate": base64.StdEncoding.EncodeToString(certDER),
-				},
-			})
+			http.NotFound(w, r)
 		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/signature/check":
 			checkCalls.Add(1)
 			var req map[string]string
@@ -54,9 +43,7 @@ func TestClientCheckUsesCachedCertificate(t *testing.T) {
 			if req["client_id"] != "test-client" {
 				t.Fatalf("unexpected client_id: %q", req["client_id"])
 			}
-			// Challenge must contain client_nonce URL-encoded, matching
-			// the format produced by challenge.CanonicalBytes on the server.
-			challenge := "service=test;client_nonce=" + url.QueryEscape(req["client_nonce"])
+			challenge := buildServerChallenge(req["client_nonce"])
 			signatureB64 := mustSignChallengeB64(t, privateKey, challenge)
 
 			writeJSON(t, w, http.StatusOK, map[string]any{
@@ -75,13 +62,13 @@ func TestClientCheckUsesCachedCertificate(t *testing.T) {
 	defer srv.Close()
 
 	client, err := New(Config{
-		BaseURL:      srv.URL,
-		ClientID:     "test-client",
-		TrustedCAPEM: string(caPEM),
+		BaseURL:  srv.URL,
+		ClientID: "test-client",
 	})
 	if err != nil {
 		t.Fatalf("new client failed: %v", err)
 	}
+	preloadClientCertificate(client, cert, certDER)
 
 	ctx := context.Background()
 	first, err := client.Check(ctx, "nonce-1")
@@ -100,8 +87,8 @@ func TestClientCheckUsesCachedCertificate(t *testing.T) {
 		t.Fatalf("expected second result ok, got %+v", second)
 	}
 
-	if got := certCalls.Load(); got != 1 {
-		t.Fatalf("expected certificate endpoint called once, got %d", got)
+	if got := certCalls.Load(); got != 0 {
+		t.Fatalf("expected certificate endpoint not called, got %d", got)
 	}
 	if got := checkCalls.Load(); got != 2 {
 		t.Fatalf("expected check endpoint called twice, got %d", got)
@@ -109,9 +96,6 @@ func TestClientCheckUsesCachedCertificate(t *testing.T) {
 }
 
 func TestClientCheckReturnsBusinessFailureWithoutError(t *testing.T) {
-	_, _, certDER := mustCreateSelfSignedRSACertificate(t)
-	caPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})
-
 	var certCalls atomic.Int32
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -133,9 +117,8 @@ func TestClientCheckReturnsBusinessFailureWithoutError(t *testing.T) {
 	defer srv.Close()
 
 	client, err := New(Config{
-		BaseURL:      srv.URL,
-		ClientID:     "test-client",
-		TrustedCAPEM: string(caPEM),
+		BaseURL:  srv.URL,
+		ClientID: "test-client",
 	})
 	if err != nil {
 		t.Fatalf("new client failed: %v", err)
@@ -157,17 +140,10 @@ func TestClientCheckReturnsBusinessFailureWithoutError(t *testing.T) {
 }
 
 func TestClientCheckFailsWhenNonceMissingFromChallenge(t *testing.T) {
-	privateKey, _, certDER := mustCreateSelfSignedRSACertificate(t)
-	caPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})
+	privateKey, cert, certDER := mustCreateSelfSignedRSACertificate(t)
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
-		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/certificate":
-			writeJSON(t, w, http.StatusOK, map[string]any{
-				"result": map[string]any{
-					"certificate": base64.StdEncoding.EncodeToString(certDER),
-				},
-			})
 		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/signature/check":
 			// Server returns challenge without the client_nonce — simulates replay attack
 			challenge := "service=license-sentinel;ts=2026-01-01T00:00:00Z;nonce=abc"
@@ -188,13 +164,13 @@ func TestClientCheckFailsWhenNonceMissingFromChallenge(t *testing.T) {
 	defer srv.Close()
 
 	client, err := New(Config{
-		BaseURL:      srv.URL,
-		ClientID:     "test-client",
-		TrustedCAPEM: string(caPEM),
+		BaseURL:  srv.URL,
+		ClientID: "test-client",
 	})
 	if err != nil {
 		t.Fatalf("new client failed: %v", err)
 	}
+	preloadClientCertificate(client, cert, certDER)
 
 	_, err = client.Check(context.Background(), "my-nonce-xyz")
 	if err == nil {
@@ -203,9 +179,6 @@ func TestClientCheckFailsWhenNonceMissingFromChallenge(t *testing.T) {
 }
 
 func TestRefreshCertificateInvalidBase64(t *testing.T) {
-	_, _, certDER := mustCreateSelfSignedRSACertificate(t)
-	caPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})
-
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet || r.URL.Path != "/api/v1/certificate" {
 			http.NotFound(w, r)
@@ -220,9 +193,8 @@ func TestRefreshCertificateInvalidBase64(t *testing.T) {
 	defer srv.Close()
 
 	client, err := New(Config{
-		BaseURL:      srv.URL,
-		ClientID:     "test-client",
-		TrustedCAPEM: string(caPEM),
+		BaseURL:  srv.URL,
+		ClientID: "test-client",
 	})
 	if err != nil {
 		t.Fatalf("new client failed: %v", err)
@@ -238,8 +210,7 @@ func TestClientCheckOverUDS(t *testing.T) {
 		t.Skip("UDS integration test is skipped on Windows")
 	}
 
-	privateKey, _, certDER := mustCreateSelfSignedRSACertificate(t)
-	caPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})
+	privateKey, cert, certDER := mustCreateSelfSignedRSACertificate(t)
 
 	socketPath := filepath.Join(t.TempDir(), "license-sentinel.sock")
 	ln, err := net.Listen("unix", socketPath)
@@ -258,21 +229,14 @@ func TestClientCheckOverUDS(t *testing.T) {
 			switch {
 			case r.Method == http.MethodGet && r.URL.Path == "/api/v1/certificate":
 				certCalls.Add(1)
-				if got := r.URL.Query().Get("client_id"); got != "test-client" {
-					t.Fatalf("unexpected client_id: %q", got)
-				}
-				writeJSON(t, w, http.StatusOK, map[string]any{
-					"result": map[string]any{
-						"certificate": base64.StdEncoding.EncodeToString(certDER),
-					},
-				})
+				http.NotFound(w, r)
 			case r.Method == http.MethodPost && r.URL.Path == "/api/v1/signature/check":
 				checkCalls.Add(1)
 				var req map[string]string
 				if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 					t.Fatalf("decode request failed: %v", err)
 				}
-				challenge := "service=test;client_nonce=" + url.QueryEscape(req["client_nonce"])
+				challenge := buildServerChallenge(req["client_nonce"])
 				signatureB64 := mustSignChallengeB64(t, privateKey, challenge)
 
 				writeJSON(t, w, http.StatusOK, map[string]any{
@@ -302,11 +266,11 @@ func TestClientCheckOverUDS(t *testing.T) {
 	client, err := New(Config{
 		ClientID:       "test-client",
 		UnixSocketPath: socketPath,
-		TrustedCAPEM:   string(caPEM),
 	})
 	if err != nil {
 		t.Fatalf("new client failed: %v", err)
 	}
+	preloadClientCertificate(client, cert, certDER)
 
 	result, err := client.Check(context.Background(), "nonce-uds")
 	if err != nil {
@@ -315,12 +279,19 @@ func TestClientCheckOverUDS(t *testing.T) {
 	if !result.OK {
 		t.Fatalf("expected ok result, got %+v", result)
 	}
-	if certCalls.Load() != 1 {
-		t.Fatalf("expected one certificate request, got %d", certCalls.Load())
+	if certCalls.Load() != 0 {
+		t.Fatalf("expected zero certificate requests, got %d", certCalls.Load())
 	}
 	if checkCalls.Load() != 1 {
 		t.Fatalf("expected one check request, got %d", checkCalls.Load())
 	}
+}
+
+func preloadClientCertificate(c *Client, cert *x509.Certificate, certDER []byte) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.cert = cert
+	c.certDER = append([]byte(nil), certDER...)
 }
 
 func writeJSON(t *testing.T, w http.ResponseWriter, status int, payload any) {
@@ -372,4 +343,16 @@ func mustSignChallengeB64(t *testing.T, key *rsa.PrivateKey, challenge string) s
 		t.Fatalf("sign challenge failed: %v", err)
 	}
 	return base64.StdEncoding.EncodeToString(signature)
+}
+
+func buildServerChallenge(clientNonce string) string {
+	challenge := "service=license-sentinel" +
+		";ts=" + time.Now().UTC().Format(time.RFC3339Nano) +
+		";nonce=" + base64.StdEncoding.EncodeToString([]byte("server-nonce-16bytes"))
+
+	if strings.TrimSpace(clientNonce) != "" {
+		challenge += ";client_nonce=" + url.QueryEscape(clientNonce)
+	}
+
+	return challenge
 }
